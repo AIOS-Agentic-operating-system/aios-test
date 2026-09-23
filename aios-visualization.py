@@ -1,71 +1,79 @@
-# aios-visualization.py
-"""
-Python script to connect to the PostgreSQL database (connector:conn-jdbc-postgres),
-retrieve top‑5 products by total sales, and generate a bar chart using matplotlib.
-The script is self‑contained and can be run directly from the workspace.
-"""
-
-import os
-import sys
-import json
-import matplotlib.pyplot as plt
 import pandas as pd
-
-# Use psycopg2 for PostgreSQL connection (available in the AIOS environment)
+import matplotlib.pyplot as plt
+import seaborn as sns
 import psycopg2
-from psycopg2.extras import RealDictCursor
+import os
 
-# Database connection parameters are resolved automatically by the connector.
-# The connector identifier is passed via an environment variable for safety.
-DB_CONNECTOR = os.getenv("AIOS_DB_CONNECTOR", "connector:conn-jdbc-postgres")
-
-def get_connection():
-    # In the AIOS runtime, the connector string is interpreted by the underlying driver.
-    # Here we assume a DSN‑style connection string is provided via the environment.
-    dsn = os.getenv("AIOS_POSTGRES_DSN")
-    if not dsn:
-        raise RuntimeError("Environment variable AIOS_POSTGRES_DSN not set. Provide a valid PostgreSQL DSN.")
-    return psycopg2.connect(dsn, cursor_factory=RealDictCursor)
-
-def fetch_top_products(limit=5):
-    query = """
-        SELECT p.product_name,
-               SUM(oi.quantity * oi.unit_price) AS total_sales
-        FROM order_items oi
-        JOIN products p ON oi.product_id = p.product_id
-        GROUP BY p.product_name
-        ORDER BY total_sales DESC
-        LIMIT %s;
-    """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, (limit,))
-            rows = cur.fetchall()
-    return pd.DataFrame(rows)
-
-def plot_sales(df):
-    plt.figure(figsize=(10, 6))
-    plt.bar(df['product_name'], df['total_sales'], color='steelblue')
-    plt.xlabel('Product')
-    plt.ylabel('Total Sales (USD)')
-    plt.title('Top {} Products by Sales'.format(len(df)))
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-    output_path = 'top_products_sales.png'
-    plt.savefig(output_path)
-    print(f"Bar chart saved to {output_path}")
-
-def main():
+def generate_visualizations():
+    # Database Connection parameters
+    db_url = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/postgres')
+    
     try:
-        df = fetch_top_products()
-        if df.empty:
-            print("No sales data found.")
-            sys.exit(0)
-        print("Top products data:\n", df)
-        plot_sales(df)
+        conn = psycopg2.connect(db_url)
+        print("Successfully connected to PostgreSQL database.")
+        
+        # 1. Top Products by Total Sales Revenue
+        query_top_products = """
+            SELECT p.product_name, SUM(oi.line_total) AS total_revenue
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.product_id
+            GROUP BY p.product_name
+            ORDER BY total_revenue DESC
+            LIMIT 10;
+        """
+        df_products = pd.read_sql_query(query_top_products, conn)
+        plt.figure(figsize=(10, 6))
+        sns.barplot(data=df_products, x='total_revenue', y='product_name', palette='viridis')
+        plt.title('Top 10 Products by Total Revenue')
+        plt.xlabel('Revenue ($)')
+        plt.ylabel('Product Name')
+        plt.tight_layout()
+        plt.savefig('top_products_revenue.png')
+        plt.close()
+        
+        # 2. Customer Segment Distribution
+        query_customers = """
+            SELECT customer_segment, COUNT(customer_id) AS total_customers
+            FROM customers
+            GROUP BY customer_segment;
+        """
+        df_customers = pd.read_sql_query(query_customers, conn)
+        plt.figure(figsize=(8, 5))
+        sns.barplot(data=df_customers, x='customer_segment', y='total_customers', palette='magma')
+        plt.title('Customer Distribution by Segment')
+        plt.xlabel('Segment')
+        plt.ylabel('Customer Count')
+        plt.tight_layout()
+        plt.savefig('customer_segments.png')
+        plt.close()
+        
+        # 3. Monthly Order Volume and Revenue Trends
+        query_orders = """
+            SELECT DATE_TRUNC('month', ordered_at) AS order_month,
+                   COUNT(order_id) AS total_orders,
+                   SUM(order_total) AS total_revenue
+            FROM orders
+            WHERE order_status = 'completed'
+            GROUP BY order_month
+            ORDER BY order_month;
+        """
+        df_orders = pd.read_sql_query(query_orders, conn)
+        if not df_orders.empty:
+            df_orders['order_month'] = pd.to_datetime(df_orders['order_month']).dt.strftime('%Y-%m')
+            plt.figure(figsize=(12, 6))
+            sns.lineplot(data=df_orders, x='order_month', y='total_revenue', marker='o', color='b', label='Revenue')
+            plt.title('Monthly Completed Orders Revenue Trend')
+            plt.xlabel('Month')
+            plt.ylabel('Total Revenue ($)')
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig('monthly_revenue_trend.png')
+            plt.close()
+        
+        conn.close()
+        print("Visualizations generated successfully.")
     except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        print(f"Error processing visualizations: {e}")
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    generate_visualizations()
